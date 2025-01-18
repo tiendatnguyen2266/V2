@@ -1,0 +1,7 @@
+{
+    "files.associations": {
+        "gettime.h": "c",
+        "mqtt.h": "c",
+        "pubsubclient.h": "c"
+    }
+}

@@ -1,0 +1,5 @@
+https://mischianti.org/lora-e32-device-for-arduino-esp32-or-esp8266-specs-and-basic-usage-part-1/
+
+https://mischianti.org/lora-e32-device-for-arduino-esp32-or-esp8266-library-part-2/\
+
+https://github.com/KrisKasprzak/EBYTE

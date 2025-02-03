@@ -14,7 +14,7 @@ void LoraSetup() {
   pinMode(PIN_AUX, INPUT);
   
   if (!Transceiver.init()) {
-    Serial.println("Khởi tạo E32 thất bại!");
+    Serial.println("LoRa initialization failed!");
     while(1);
   }
   
@@ -25,7 +25,7 @@ void LoraSetup() {
   Transceiver.SetAirDataRate(ADR_2400);
   Transceiver.SaveParameters(PERMANENT);
   
-  Serial.println("E32 khởi tạo thành công!");
+  Serial.println("LoRa initialized successfully!");
 }
 
 // Hàm gửi

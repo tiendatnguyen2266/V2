@@ -3,6 +3,9 @@
 #include <Arduino.h>
 #include "Buzz.h"
 #include <EEPROM.h>
+#include "LoraModule.h"
+
+
     extern int penCode, nodeId;
     // Định nghĩa chân DIP switches
     #define DIPSW1 PA10

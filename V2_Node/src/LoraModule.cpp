@@ -1,81 +1,145 @@
 #include "LoraModule.h"
 
-String gatewayId;
-int addrGatewayId = 4;
-bool LoraSender = false;
-uint32_t waitDuration = 30 * 1000000; // Thời gian chờ mặc định là 30 giây
+// Khởi tạo UART và LoRa
+HardwareSerial Serial2(RXD2, TXD2);
+EBYTE Transceiver(&Serial2, PIN_M0, PIN_M1, PIN_AUX);
 
-// Khởi tạo đối tượng LoRa E32
-LoRa_E32 e32ttl100(&Serial2);
+
+String gatewayId;
+uint32_t waitDuration = 30000; // Thời gian chờ mặc định là 30 giây
+
 
 void LoraSetup() {
-    e32ttl100.begin();
-    Serial.println("LoRa E32 init succeeded.");
-    e32ttl100.setMode(MODE_0_NORMAL); // Chế độ hoạt động bình thường
+  Serial2.begin(9600);
+  pinMode(PIN_AUX, INPUT);
+  
+  if (!Transceiver.init()) {
+    Serial.println("Khởi tạo E32 thất bại!");
+    while(1);
+  }
+  
+  // Cấu hình tham số cho LoRa
+  Transceiver.SetAddressH(0);
+  Transceiver.SetAddressL(1);
+  Transceiver.SetChannel(15);
+  Transceiver.SetAirDataRate(ADR_2400);
+  Transceiver.SaveParameters(PERMANENT);
+  
+  Serial.println("E32 khởi tạo thành công!");
 }
 
+// Hàm gửi
 void sendSensorData(String gatewayId, int penCode, int nodeId, float t, float h, float nh3, float h2s) {
+  SensorData data;
+  gatewayId.toCharArray(data.gatewayId, 16);
+  data.penCode = penCode;
+  data.nodeId = nodeId;
+  data.t = t;
+  data.h = h;
+  data.nh3 = nh3;
+  data.h2s = h2s;
+
+  bool ackReceived = false;
+  int attempts = 0;
+  
+  while (!ackReceived && attempts < 3) {
     beginSend();
-    bool ackReceived = false;
-    int count = 0;
-
-    while (!ackReceived && count <= 3) {
-        String data = "gatewayId:" + gatewayId + "; penCode:" + String(penCode) + "; nodeId:" + String(nodeId) +
-                      "; Temp:" + String(t) + "; Hum:" + String(h) + "; NH3:" + String(nh3) + "; H2S:" + String(h2s);
-
-        ResponseStatus rs = e32ttl100.sendMessage(data);
-        if (rs.code == 1) {
-            unsigned long startTime = millis();
-            while (millis() - startTime < 5000) {
-                if (e32ttl100.available() > 1) {
-                    ResponseContainer rc = e32ttl100.receiveMessage();
-                    String response = rc.data;
-                    if (response.startsWith("OK/")) {
-                        // Xử lý phản hồi
-                        String receivedMac = response.substring(3, response.indexOf('/', 3));
-                        int receivedPenCode = response.substring(response.indexOf('/', 3) + 1, response.lastIndexOf('/')).toInt();
-                        int receivedNodeId = response.substring(response.lastIndexOf('/') + 1).toInt();
-
-                        if (receivedMac == gatewayId && receivedPenCode == penCode && receivedNodeId == nodeId) {
-                            digitalWrite(PB10, HIGH);
-                            delay(200);
-                            digitalWrite(PB10, LOW);
-                            ackReceived = true;
-                            break;
-                        }
-                    }
-                }
-            }
+    Transceiver.SendStruct(&data, sizeof(data));
+    
+    // Chờ phản hồi trong 5s
+    unsigned long start = millis();
+    while (millis() - start < 5000) {
+      if (Transceiver.available()) {
+        AckData ack;
+        if (Transceiver.GetStruct(&ack, sizeof(ack))) {
+          if (strcmp(ack.status, "OK") == 0 && 
+              strcmp(ack.gatewayId, gatewayId.c_str()) == 0 &&
+              ack.penCode == penCode && 
+              ack.nodeId == nodeId) {
+            ackReceived = true;
+            // Kích hoạt buzzer
+            digitalWrite(PB10, HIGH);
+            delay(200);
+            digitalWrite(PB10, LOW);
+            break;
+          }
         }
-        count++;
+      }
     }
+    attempts++;
     endSend();
+  }
 }
 
+// Hàm nhận
 bool receiveLoraData(String &receivedData) {
-    if (!LoraSender) {
-        if (e32ttl100.available() > 1) {
-            ResponseContainer rc = e32ttl100.receiveMessage();
-            receivedData = rc.data;
-            return true;
-        }
-        return false;
-    } else {
-        return false;
+  if (Transceiver.available()) {
+    SensorData data;
+    if (Transceiver.GetStruct(&data, sizeof(data))) {
+      // Chuyển struct thành chuỗi để xử lý
+      receivedData = "gatewayId:" + String(data.gatewayId) 
+                   + "; penCode:" + String(data.penCode)
+                   + "; nodeId:" + String(data.nodeId)
+                   + "; Temp:" + String(data.t)
+                   + "; Hum:" + String(data.h)
+                   + "; NH3:" + String(data.nh3)
+                   + "; H2S:" + String(data.h2s);
+      return true;
     }
+  }
+  return false;
 }
 
+// Hàm xử lý dữ liệu nhận
 void processReceivedData(String &data) {
-    // Xử lý dữ liệu nhận được tương tự như code gốc
-    // ...
+  if (data.startsWith("time/")) {
+    // Xử lý gói tin "time/"
+    int firstSlash = data.indexOf('/');
+    int secondSlash = data.indexOf('/', firstSlash + 1);
+    int thirdSlash = data.indexOf('/', secondSlash + 1);
+    int fourthSlash = data.indexOf('/', thirdSlash + 1);
+
+    String receivedMacAddress = data.substring(firstSlash + 1, secondSlash);
+    String receivedPenCode = data.substring(secondSlash + 1, thirdSlash);
+    String receivedNodeId = data.substring(thirdSlash + 1, fourthSlash);
+    String timeValue = data.substring(fourthSlash + 1);
+
+    int timeChange = timeValue.toInt();
+
+    if (receivedMacAddress == gatewayId && penCode == receivedPenCode.toInt() && nodeId == receivedNodeId.toInt()) {
+      if (timeChange > 0) {
+        beginSend();
+        AckData ack;
+        strncpy(ack.status, "ACK", 4);
+        strncpy(ack.gatewayId, gatewayId.c_str(), 16);
+        ack.penCode = penCode;
+        ack.nodeId = nodeId;
+        Transceiver.SendStruct(&ack, sizeof(ack));
+        endSend();
+
+        EEPROMLib::writeInt(32, timeChange);
+        waitDuration = timeChange * 1000000; // Chuyển đổi thành micro giây
+      }
+    }
+  } else if (data.startsWith("rsID:")) {
+    // Xử lý gói tin "rsID:"
+    digitalWrite(PB10, HIGH);
+    delay(200);
+    digitalWrite(PB10, LOW);
+  }
 }
 
-void beginSend(void) {
-    LoraSender = true;
-    e32ttl100.setMode(MODE_0_NORMAL);
+// Hàm reset module LoRa
+void resetLoRaModule() {
+  Transceiver.Reset();
 }
 
-void endSend(void) {
-    e32ttl100.setMode(MODE_0_NORMAL);
-    LoraSender = false;
+// Hàm bắt đầu gửi dữ liệu
+void beginSend() {
+  Transceiver.SetMode(EBYTE_MODE_NORMAL);
+}
+
+// Hàm kết thúc gửi dữ liệu
+void endSend() {
+  Transceiver.SetMode(EBYTE_MODE_NORMAL);
 }

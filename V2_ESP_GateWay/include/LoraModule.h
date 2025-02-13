@@ -13,13 +13,31 @@
 #define TXD2 17
 
 struct LoraPacket {
-  char command[20];
+  char command[10];
   char gatewayId[20];
   int penCode;
   int nodeId;
-  char payload[50];
-  uint8_t checksum;
+  char payload[100];
+  uint16_t checksum; // Thêm trường lưu checksum
+
+  void calculateChecksum() {
+      uint16_t sum = 0;
+      // Cộng tất cả các byte của các trường (tùy theo yêu cầu của bạn)
+      for (size_t i = 0; i < sizeof(command); i++) {
+          sum += command[i];
+      }
+      for (size_t i = 0; i < sizeof(gatewayId); i++) {
+          sum += gatewayId[i];
+      }
+      for (size_t i = 0; i < sizeof(payload); i++) {
+          sum += payload[i];
+      }
+      sum += penCode;
+      sum += nodeId;
+      checksum = sum;
+  }
 };
+
 
 extern EBYTE Transceiver;
 extern std::vector<String> receivedDataList;

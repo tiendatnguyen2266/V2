@@ -288,70 +288,32 @@ void handleMqttMessage()
             // Reset và khởi động lại LoRa
             LoraSender = true;
             resetLoRaModule();
-            LoRa.setPins(LORA_CS, LORA_RST, LORA_IRQ);
 
-            while (!LoRa.begin(433E6))
-            {
-                Serial.println("LoRa initialization failed!");
-                buzzer_fail_Lora();
-            }
+            LoraPacket packet;
+            snprintf(packet.command, sizeof(packet.command), "time");
+            snprintf(packet.gatewayId, sizeof(packet.gatewayId), "%s", macAddress.c_str());
+            packet.penCode = penCodeSend.toInt();
+            packet.nodeId = NodeIdSend.toInt();
+            snprintf(packet.payload, sizeof(packet.payload), "%s", timeChange.c_str());
+            packet.calculateChecksum();
+            
+            Transceiver.SendStruct(&packet, sizeof(packet));
 
+            // Chờ phản hồi
             bool ackReceived = false;
-            LoRa.idle();
-            int count = 0;
-
-            while (!ackReceived && count < 5)
-            {
-                // Gửi dữ liệu qua LoRa
-                LoRa.beginPacket();
-                LoRa.print("time/");
-                LoRa.print(macAddress);
-                LoRa.print("/");
-                LoRa.print(penCodeSend);
-                LoRa.print("/");
-                LoRa.print(NodeIdSend);
-                LoRa.print("/");
-                LoRa.print(timeChange);
-                LoRa.endPacket();
-
-                Serial.println("LoRa Send: time/" + String(macAddress) + "/" + penCodeSend + "/" + NodeIdSend + "/" + timeChange);
-
-                // Chờ phản hồi từ node nhận trong 3 giây
-                unsigned long startTime = millis();
-                while (millis() - startTime < 3000)
-                {
-                    int packetSize = LoRa.parsePacket();
-                    if (packetSize)
-                    {
-                        String response = LoRa.readString();
-                        Serial.println("LoRa Response: " + response);
-
-                        if (response.startsWith("BCK"))
-                        {
-                            // Phân tách dữ liệu sau "ACK,"
-                            int firstComma = response.indexOf(',');
-                            int secondComma = response.indexOf(',', firstComma + 1);
-                            int thirdComma = response.indexOf(',', secondComma + 1);
-
-                            if (firstComma > 0 && secondComma > firstComma && thirdComma > secondComma)
-                            {
-                                // Tách các giá trị trong gói phản hồi
-                                String GatewayIdReceived = response.substring(firstComma + 1, secondComma);
-                                String penCodeReceived = response.substring(secondComma + 1, thirdComma);
-                                String nodeIdReceived = response.substring(thirdComma + 1);
-
-                                // Kiểm tra nếu penCode và nodeId khớp
-                                if (GatewayIdReceived == String(macAddress) && penCodeReceived == penCodeSend && nodeIdReceived == NodeIdSend)
-                                {
-                                    ackReceived = true;
-                                    break;
-                                }
-                            }
-                        }
+            unsigned long startTime = millis();
+            while (millis() - startTime < 3000) {
+                LoraPacket response;
+                if (Transceiver.GetStruct(&response, sizeof(response))) {
+                    if (strcmp(response.command, "BCK") == 0 &&
+                        strcmp(response.gatewayId, macAddress.c_str()) == 0 &&
+                        response.penCode == penCodeSend.toInt() &&
+                        response.nodeId == NodeIdSend.toInt()) {
+                        ackReceived = true;
+                        break;
                     }
                 }
-                vTaskDelay(pdMS_TO_TICKS(500));
-                count++;
+                delay(10);
             }
 
             // Gửi phản hồi qua MQTT
@@ -366,13 +328,6 @@ void handleMqttMessage()
             // Đặt lại LoRa về chế độ nhận
             LoraSender = false;
             resetLoRaModule();
-            LoRa.setPins(LORA_CS, LORA_RST, LORA_IRQ);
-            while (!LoRa.begin(433E6))
-            {
-                Serial.println("LoRa initialization failed!");
-                buzzer_fail_Lora();
-            }
-            LoRa.receive();
         }
     }
     else if (receivedTopic.endsWith("/changeGatewayId/request"))
@@ -431,106 +386,60 @@ void handleMqttMessage()
         }
     }
 
-    else if (receivedTopic.startsWith(String(macAddress) + "/") && receivedTopic.endsWith("/changeGatewayId_Node/request"))
-    {
-
+    else if (receivedTopic.startsWith(String(macAddress) + "/") && receivedTopic.endsWith("/changeGatewayId_Node/request")) {
         char topicBuffer[100];
-        receivedTopic.toCharArray(topicBuffer, sizeof(topicBuffer)); // Chuyển topic từ String sang mảng ký tự
+        receivedTopic.toCharArray(topicBuffer, sizeof(topicBuffer));
         String macAddressForNode = receivedPayload;
-        char *token = strtok(topicBuffer, "/"); // Chia nhỏ topic theo ký tự '/'
+        char *token = strtok(topicBuffer, "/");
         int tokenIndex = 0;
         String penCodeSend, NodeIdSend;
 
-        while (token != NULL)
-        {
+        while (token != NULL) {
             tokenIndex++;
-            if (tokenIndex == 2)
-            { // Phần tử thứ 2 sau macAddress
-                penCodeSend = token;
-            }
-            else if (tokenIndex == 3)
-            { // Phần tử thứ 3 sau macAddress
-                NodeIdSend = token;
-            }
-            token = strtok(NULL, "/"); // Lấy phần tiếp theo
+            if (tokenIndex == 2) penCodeSend = token;
+            else if (tokenIndex == 3) NodeIdSend = token;
+            token = strtok(NULL, "/");
         }
 
-        if (penCodeSend.length() > 0 && NodeIdSend.length() > 0)
-        {
+        if (penCodeSend.length() > 0 && NodeIdSend.length() > 0) {
             LoraSender = true;
-            resetLoRaModule();
-            LoRa.setPins(LORA_CS, LORA_RST, LORA_IRQ);
-            while (!LoRa.begin(433E6))
-            {
-                Serial.println("LoRa initialization failed!");
-                buzzer_fail_Lora();
-            }
+            
+            // Gửi gói tin qua EBYTE
+            LoraPacket packet;
+            snprintf(packet.command, sizeof(packet.command), "rsID");
+            packet.penCode = penCodeSend.toInt();
+            packet.nodeId = NodeIdSend.toInt();
+            snprintf(packet.payload, sizeof(packet.payload), "%s", macAddressForNode.c_str());
+            packet.calculateChecksum();
+            
+            Transceiver.SendStruct(&packet, sizeof(packet));
+
+            // Chờ phản hồi
             bool ackReceived = false;
-            LoRa.idle();
-            int count = 0;
-            while (!ackReceived && count < 10)
-            {
-                LoRa.beginPacket();
-                LoRa.print("rsID:");
-                LoRa.print(penCodeSend);
-                LoRa.print(",");
-                LoRa.print(NodeIdSend);
-                LoRa.print(",");
-                LoRa.print(macAddressForNode);
-                LoRa.endPacket();
-                // Chờ phản hồi từ node nhận
-                Serial.println("Send Lora Data rsID:" + penCodeSend + "," + NodeIdSend + "," + macAddressForNode);
-                unsigned long startTime = millis();
-
-                while (millis() - startTime < 3000)
-                {
-                    int packetSize = LoRa.parsePacket(); // Kiểm tra nếu có gói tin đến
-                    if (packetSize)
-                    {
-                        String response = LoRa.readString(); // Đọc dữ liệu gói tin
-                        Serial.println("Lora Response: " + response);
-                        if (response.startsWith("ACK"))
-                        {
-                            // Phân tách dữ liệu sau "ACK,"
-                            int firstComma = response.indexOf(',');
-                            int secondComma = response.indexOf(',', firstComma + 1);
-                            int thirdComma = response.indexOf(',', secondComma + 1);
-
-                            if (firstComma > 0 && secondComma > firstComma && thirdComma > secondComma)
-                            {
-                                // Tách các giá trị trong gói phản hồi
-                                String newGatewayIdReceived = response.substring(firstComma + 1, secondComma);
-                                String penCodeReceived = response.substring(secondComma + 1, thirdComma);
-                                String nodeIdReceived = response.substring(thirdComma + 1);
-
-                                // Kiểm tra nếu penCode và nodeId khớp
-                                if (newGatewayIdReceived == macAddressForNode && penCodeReceived == penCodeSend && nodeIdReceived == NodeIdSend)
-                                {
-                                    ackReceived = true;
-                                    break;
-                                }
-                            }
-                        }
+            unsigned long startTime = millis();
+            while (millis() - startTime < 3000) {
+                LoraPacket response;
+                if (Transceiver.GetStruct(&response, sizeof(response))) {
+                    if (strcmp(response.command, "ACK") == 0 &&
+                        strcmp(response.payload, macAddressForNode.c_str()) == 0 &&
+                        response.penCode == penCodeSend.toInt() &&
+                        response.nodeId == NodeIdSend.toInt()) {
+                        ackReceived = true;
+                        break;
                     }
                 }
-                vTaskDelay(pdMS_TO_TICKS(500));
-                count++;
+                delay(10);
             }
-            vTaskDelay(pdMS_TO_TICKS(500));
+
+            // Gửi phản hồi MQTT
             char responseTopic[100];
-            snprintf(responseTopic, sizeof(responseTopic), "%s/%s/%s/changeGatewayId_Node/response", macAddress, penCodeSend, NodeIdSend);
+            snprintf(responseTopic, sizeof(responseTopic), "%s/%s/%s/changeGatewayId_Node/response", 
+                    macAddress.c_str(), penCodeSend.c_str(), NodeIdSend.c_str());
             char payload[10];
-            snprintf(payload, sizeof(payload), "%s", String(ackReceived));
+            snprintf(payload, sizeof(payload), "%d", ackReceived);
             publishMessage(responseTopic, payload);
+
             LoraSender = false;
-            resetLoRaModule();
-            LoRa.setPins(LORA_CS, LORA_RST, LORA_IRQ);
-            while (!LoRa.begin(433E6))
-            {
-                Serial.println("LoRa initialization failed!");
-                buzzer_fail_Lora();
-            }
-            LoRa.receive();
         }
     }
 }
@@ -624,44 +533,19 @@ void processData(const String &data)
 
         LoraSender = true;
         resetLoRaModule();
-        LoRa.setPins(LORA_CS, LORA_RST, LORA_IRQ);
-        while (!LoRa.begin(433E6))
-        {
-            Serial.println("LoRa initialization failed!");
-            buzzer_fail_Lora();
-        }
-        LoRa.idle();
-        int maxAttempts = 5;
-        for (int attempt = 0; attempt < maxAttempts; attempt++)
-        {
-            int rssi = LoRa.packetRssi();
-            if (rssi < -90)
-            {
-                LoRa.beginPacket();
-                LoRa.print("OK/");
-                LoRa.print(macAddress);
-                LoRa.print("/");
-                LoRa.print(sensorData.penCode);
-                LoRa.print("/");
-                LoRa.print(sensorData.nodeId);
-                LoRa.endPacket();
-                Serial.println("Send ACK: OK/" + String(macAddress) + "/" + sensorData.penCode + "/" + sensorData.nodeId);
-                break;
-            }
-            else
-            {
-                delay(random(100, 500)); // Retry khi kênh bận
-            }
-        }
+        
+        LoraPacket ackPacket;
+        snprintf(ackPacket.command, sizeof(ackPacket.command), "OK");
+        snprintf(ackPacket.gatewayId, sizeof(ackPacket.gatewayId), "%s", macAddress.c_str());
+        ackPacket.penCode = sensorData.penCode;
+        ackPacket.nodeId = sensorData.nodeId;
+        ackPacket.calculateChecksum();
+
+        LoraSender = true;
+        Transceiver.SendStruct(&ackPacket, sizeof(ackPacket));
         LoraSender = false;
         resetLoRaModule();
-        LoRa.setPins(LORA_CS, LORA_RST, LORA_IRQ);
-        while (!LoRa.begin(433E6))
-        {
-            Serial.println("LoRa initialization failed!");
-            buzzer_fail_Lora();
-        }
-        LoRa.receive();
+
         char payload[256];
         serializeJson(doc, payload);
         char topic[50];

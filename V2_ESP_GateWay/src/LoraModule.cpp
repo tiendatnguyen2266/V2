@@ -1,5 +1,4 @@
 #include "LoraModule.h"
-#include "buzzer.h"
 
 EBYTE Transceiver(&Serial2, PIN_M0, PIN_M1, PIN_AUX);
 std::vector<String> receivedDataList;
